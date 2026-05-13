@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+:root {
+  --background: #fafafa;
+  --foreground: #0f172a;
+  --surface: #eef2f6;
+  --border: #cbd5e1;
+  --primary: #155eef;
+  --success: #067647;
+  --danger: #b42318;
+  --header-band: #e8d4c4;
+  --header-border: #d4b896;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+}
+
+.app-top-header {
+  background: var(--header-band);
+  border-color: var(--header-border);
+}
+
+.badge {
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  padding: 0.15rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
