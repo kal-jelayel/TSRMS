@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { isAdminRole, normalizeAppRole } from "@/lib/auth/roles";
 import { clearSessionUser, persistSessionUser, readSessionUser } from "@/lib/auth/sessionClient";
 import {
@@ -11,7 +11,9 @@ import {
 } from "@/lib/application/tsrmsService";
 import { formatISODateToDMY, parseDMYToISO } from "@/lib/date/dmy";
 import { signInWithUsersTable } from "@/lib/supabase/auth";
-import { fetchSupabaseAppSnapshot } from "@/lib/supabase/appDataSync";
+import { useContingency } from "@/lib/supabase/useContingency";
+import { contingency } from "@/lib/supabase/contingency.mjs";
+import ContingencyNotice from "./ContingencyNotice";
 import {
   cancelReservationByConfirmationInSupabase,
   completeReservationInSupabase,
@@ -26,20 +28,15 @@ const ALL_TABS = [
   "Reports",
 ];
 
-function mergeServerSnapshotIntoState(prev, snap) {
-  return {
-    ...prev,
-    schedules: snap.schedules,
-    passengers: snap.passengers,
-    bookings: snap.bookings,
-  };
-}
-
 export default function Home() {
-  const [state, setState] = useState(() => initializeState());
   const [activeTab, setActiveTab] = useState("Dashboard");
   const [sessionUser, setSessionUser] = useState(null);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+  const data = useContingency(sessionUser);
+  const { refresh } = data;
+  const state = data.snapshot ?? initializeState();
+  const canWrite = data.status === "ready" && !data.busy;
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
   const [loginPending, setLoginPending] = useState(false);
   const [showForgotHelp, setShowForgotHelp] = useState(false);
@@ -55,11 +52,16 @@ export default function Home() {
   });
   const [cancelForm, setCancelForm] = useState({ confirmationCode: "", reason: "" });
 
-  useLayoutEffect(() => {
-    const restored = readSessionUser();
-    if (restored?.username && restored?.role) {
-      setSessionUser({ ...restored, role: normalizeAppRole(restored.role) });
-    }
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      const restored = readSessionUser();
+      if (restored?.username && restored?.role) {
+        setSessionUser({ ...restored, role: normalizeAppRole(restored.role) });
+      }
+    });
+    return () => { active = false; };
   }, []);
 
   const isAdmin = isAdminRole(sessionUser?.role);
@@ -69,37 +71,10 @@ export default function Home() {
     [isAdmin]
   );
 
-  useEffect(() => {
-    if (!sessionUser || isAdmin) return undefined;
-    if (activeTab === "Reports") setActiveTab("Dashboard");
-    return undefined;
-  }, [sessionUser, isAdmin, activeTab]);
-
-  useEffect(() => {
-    setError("");
-  }, [activeTab]);
-
   const stats = useMemo(() => getDashboardStats(state), [state]);
   useEffect(() => {
-    if (!sessionUser) return undefined;
-    let cancelled = false;
-    (async () => {
-      try {
-        const snap = await fetchSupabaseAppSnapshot();
-        if (!cancelled) {
-          setError("");
-          setState((prev) => mergeServerSnapshotIntoState(prev, snap));
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err.message ?? "Failed to sync data from Supabase.");
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionUser, activeTab]);
+    if (sessionUser) void refresh();
+  }, [sessionUser, activeTab, refresh]);
 
   const reservationDateISO = useMemo(
     () => parseDMYToISO(reservationForm.dateDisplay),
@@ -120,6 +95,7 @@ export default function Home() {
 
   function clearMessages() {
     setError("");
+    setSuccess("");
   }
 
   async function handleLogin(event) {
@@ -129,6 +105,7 @@ export default function Home() {
     setLoginPending(true);
     try {
       const user = await signInWithUsersTable(loginForm.username, loginForm.password);
+      setActiveTab("Dashboard");
       setSessionUser(user);
       persistSessionUser(user);
     } catch (err) {
@@ -147,12 +124,13 @@ export default function Home() {
     event.preventDefault();
     clearMessages();
     try {
+      contingency.assertReady();
       if (!reservationDateISO) {
         throw new Error("Enter travel date as DD/MM/YYYY (e.g. 31/12/2026).");
       }
       const seats = Number(reservationForm.seats);
       const scheduleId = reservationForm.scheduleId;
-      await completeReservationInSupabase({
+      const result = await completeReservationInSupabase({
         scheduleId,
         seats,
         passenger: {
@@ -161,8 +139,8 @@ export default function Home() {
           phone: reservationForm.phone,
         },
       });
-      const snap = await fetchSupabaseAppSnapshot();
-      setState((prev) => mergeServerSnapshotIntoState(prev, snap));
+      setSuccess(`Reservation confirmed: ${result.booking.confirmationCode}.`);
+      await data.refresh();
     } catch (err) {
       setError(err.message ?? "Reservation failed.");
     }
@@ -172,12 +150,13 @@ export default function Home() {
     event.preventDefault();
     clearMessages();
     try {
+      contingency.assertReady();
       await cancelReservationByConfirmationInSupabase(
         cancelForm.confirmationCode.trim(),
         cancelForm.reason
       );
-      const snap = await fetchSupabaseAppSnapshot();
-      setState((prev) => mergeServerSnapshotIntoState(prev, snap));
+      setSuccess("Cancellation confirmed.");
+      await data.refresh();
       setCancelForm({ confirmationCode: "", reason: "" });
     } catch (err) {
       setError(err.message);
@@ -254,7 +233,8 @@ export default function Home() {
               onClick={() => {
                 clearSessionUser();
                 setSessionUser(null);
-                setState(initializeState());
+                setSuccess("");
+                setError("");
               }}
               className="rounded-lg border border-amber-900/20 bg-white/60 px-4 py-2 text-sm font-medium text-slate-800 hover:bg-white/90"
             >
@@ -267,7 +247,7 @@ export default function Home() {
           {visibleTabs.map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={() => { setActiveTab(tab); setError(""); setSuccess(""); }}
               className={`rounded-lg px-3 py-2 text-sm font-medium ${
                 activeTab === tab
                   ? "bg-blue-600 text-white"
@@ -280,6 +260,10 @@ export default function Home() {
         </nav>
 
         {error ? <p className="text-sm font-medium text-red-700">{error}</p> : null}
+
+        <ContingencyNotice data={data} />
+        {success ? <p role="status" className="text-sm text-green-800">{success}</p> : null}
+        {!data.snapshot ? <p>Data unavailable{data.status === "loading" ? " - loading live data." : "."}</p> : <>
 
         {activeTab === "Dashboard" ? (
           <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -399,6 +383,7 @@ export default function Home() {
             <article className="card p-5 sm:p-6">
               <h2 className="text-lg font-semibold">Process Reservation</h2>
               <form className="mt-3 space-y-2" onSubmit={handleReservation}>
+                <fieldset disabled={!canWrite} className="space-y-2">
                 <div className="grid gap-2 sm:grid-cols-2">
                   <input
                     className="rounded-lg border border-slate-300 px-3 py-2 text-sm border-slate-200 bg-white"
@@ -481,6 +466,7 @@ export default function Home() {
                 <button className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700">
                   Confirm Reservation
                 </button>
+                </fieldset>
               </form>
             </article>
             <article className="card p-5 sm:p-6 overflow-auto">
@@ -524,6 +510,7 @@ export default function Home() {
             <article className="card p-5 sm:p-6">
               <h2 className="text-lg font-semibold">Cancel Ticket</h2>
               <form className="mt-3 space-y-2" onSubmit={handleCancellation}>
+                <fieldset disabled={!canWrite} className="space-y-2">
                 <input
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm border-slate-200 bg-white"
                   placeholder="Confirmation Code"
@@ -541,6 +528,7 @@ export default function Home() {
                 <button className="w-full rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700">
                   Cancel Booking
                 </button>
+                </fieldset>
               </form>
             </article>
             <article className="card p-5 sm:p-6">
@@ -575,6 +563,7 @@ export default function Home() {
             </div>
           </section>
         ) : null}
+        </>}
       </section>
     </main>
   );

@@ -2,15 +2,18 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { isAdminRole, normalizeAppRole } from "@/lib/auth/roles";
 import { readSessionUser } from "@/lib/auth/sessionClient";
 import { formatISODateToDMY, parseDMYToISO } from "@/lib/date/dmy";
 import {
   deleteScheduleFromSupabase,
-  fetchSchedulesFromSupabase,
   insertScheduleInSupabase,
 } from "@/lib/supabase/schedules";
+
+import { useContingency } from "@/lib/supabase/useContingency";
+import { contingency } from "@/lib/supabase/contingency.mjs";
+import ContingencyNotice from "../ContingencyNotice";
 
 const emptyForm = {
   trainName: "",
@@ -25,8 +28,12 @@ const emptyForm = {
 export default function SchedulesPage() {
   const router = useRouter();
   const [sessionUser, setSessionUser] = useState(null);
-  const [schedules, setSchedules] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const data = useContingency(sessionUser);
+  const { refresh } = data;
+  const schedules = data.snapshot?.schedules ?? [];
+  const loading = data.status === "loading";
+  const canWrite = data.status === "ready" && !data.busy;
+  const [success, setSuccess] = useState("");
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [error, setError] = useState("");
@@ -34,46 +41,39 @@ export default function SchedulesPage() {
 
   const isAdmin = isAdminRole(sessionUser?.role);
 
-  useLayoutEffect(() => {
-    const restored = readSessionUser();
-    if (!restored?.username || !restored?.role) {
-      router.replace("/");
-      return;
-    }
-    setSessionUser({ ...restored, role: normalizeAppRole(restored.role) });
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      const restored = readSessionUser();
+      if (!restored?.username || !restored?.role) {
+        router.replace("/");
+        return;
+      }
+      setSessionUser({ ...restored, role: normalizeAppRole(restored.role) });
+    });
+    return () => { active = false; };
   }, [router]);
 
-  const loadSchedules = useCallback(async () => {
-    setError("");
-    setLoading(true);
-    try {
-      const rows = await fetchSchedulesFromSupabase();
-      setSchedules(rows);
-    } catch (err) {
-      setError(err.message ?? "Failed to load schedules.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    if (!sessionUser) return undefined;
-    loadSchedules();
-    return undefined;
-  }, [sessionUser, loadSchedules]);
+    if (sessionUser) void refresh();
+  }, [sessionUser, refresh]);
 
   async function handleSubmit(event) {
     event.preventDefault();
     setError("");
+    setSuccess("");
     setSaving(true);
     try {
+      contingency.assertReady();
       const departureISO = parseDMYToISO(form.departureDate);
       if (!departureISO) {
         throw new Error("Enter departure date as DD/MM/YYYY (e.g. 31/12/2026).");
       }
-      const created = await insertScheduleInSupabase({ ...form, departureDate: departureISO });
-      setSchedules((prev) => [...prev, created].sort(compareSchedule));
+      await insertScheduleInSupabase({ ...form, departureDate: departureISO });
+      setSuccess("Schedule creation confirmed.");
       setForm(emptyForm);
+      await data.refresh();
     } catch (err) {
       setError(err.message ?? "Failed to save schedule.");
     } finally {
@@ -83,10 +83,13 @@ export default function SchedulesPage() {
 
   async function handleDelete(id) {
     setError("");
+    setSuccess("");
     setDeletingId(id);
     try {
+      contingency.assertReady();
       await deleteScheduleFromSupabase(id);
-      setSchedules((prev) => prev.filter((s) => s.id !== id));
+      setSuccess("Schedule deletion confirmed.");
+      await data.refresh();
     } catch (err) {
       setError(err.message ?? "Failed to delete schedule.");
     } finally {
@@ -124,7 +127,9 @@ export default function SchedulesPage() {
 
         {error ? <p className="text-sm font-medium text-red-700">{error}</p> : null}
 
-        <section
+        <ContingencyNotice data={data} />
+        {success ? <p role="status" className="text-green-800">{success}</p> : null}
+        {!data.snapshot ? <p>Data unavailable{loading ? " - loading live data." : "."}</p> : <section
           className={`grid gap-4 ${isAdmin ? "lg:grid-cols-[1fr_1.4fr]" : "lg:grid-cols-1"}`}
         >
           {isAdmin ? (
@@ -149,12 +154,12 @@ export default function SchedulesPage() {
                     value={form[field]}
                     onChange={(e) => setForm((s) => ({ ...s, [field]: e.target.value }))}
                     required
-                    disabled={saving}
+                    disabled={saving || !canWrite}
                   />
                 ))}
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || !canWrite}
                   className="mt-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
                 >
                   {saving ? "Saving…" : "Save Schedule"}
@@ -168,7 +173,7 @@ export default function SchedulesPage() {
               <h2 className="text-lg font-semibold">All schedules</h2>
               <button
                 type="button"
-                onClick={loadSchedules}
+                onClick={data.refresh}
                 disabled={loading}
                 className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-100 disabled:opacity-60"
               >
@@ -226,7 +231,7 @@ export default function SchedulesPage() {
                               type="button"
                               className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 disabled:opacity-60"
                               onClick={() => handleDelete(item.id)}
-                              disabled={deletingId === item.id}
+                              disabled={deletingId !== null || !canWrite}
                             >
                               {deletingId === item.id ? "Deleting…" : "Delete"}
                             </button>
@@ -239,14 +244,8 @@ export default function SchedulesPage() {
               </table>
             )}
           </article>
-        </section>
+        </section>}
       </div>
     </main>
   );
-}
-
-function compareSchedule(a, b) {
-  const d = a.departureDate.localeCompare(b.departureDate);
-  if (d !== 0) return d;
-  return a.departureTime.localeCompare(b.departureTime);
 }
