@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "test": "node --test lib/supabase/contingency.test.mjs",
+    "migrate:phones": "node --env-file=.env.local scripts/manage-protected-records.mjs migrate-phones",
+    "reset:staff-password": "node --env-file=.env.local scripts/manage-protected-records.mjs reset-password",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

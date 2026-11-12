@@ -2,15 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { isAdminRole, normalizeAppRole } from "@/lib/auth/roles";
-import { clearSessionUser, persistSessionUser, readSessionUser } from "@/lib/auth/sessionClient";
+import { isAdminRole } from "@/lib/auth/roles";
+import { clearSessionUser, readSessionUser, signInWithUsersTable } from "@/lib/auth/sessionClient";
 import {
   getDashboardStats,
   initializeState,
   searchSchedules,
 } from "@/lib/application/tsrmsService";
 import { formatISODateToDMY, parseDMYToISO } from "@/lib/date/dmy";
-import { signInWithUsersTable } from "@/lib/supabase/auth";
 import { useContingency } from "@/lib/supabase/useContingency";
 import { contingency } from "@/lib/supabase/contingency.mjs";
 import ContingencyNotice from "./ContingencyNotice";
@@ -38,6 +37,7 @@ export default function Home() {
   const state = data.snapshot ?? initializeState();
   const canWrite = data.status === "ready" && !data.busy;
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
+  const [checkingSession, setCheckingSession] = useState(true);
   const [loginPending, setLoginPending] = useState(false);
   const [showForgotHelp, setShowForgotHelp] = useState(false);
   const [reservationForm, setReservationForm] = useState({
@@ -54,12 +54,12 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
-    queueMicrotask(() => {
-      if (!active) return;
-      const restored = readSessionUser();
-      if (restored?.username && restored?.role) {
-        setSessionUser({ ...restored, role: normalizeAppRole(restored.role) });
-      }
+    readSessionUser().then((user) => {
+      if (active && user) setSessionUser(user);
+    }).catch((err) => {
+      if (active) setError(err.message);
+    }).finally(() => {
+      if (active) setCheckingSession(false);
     });
     return () => { active = false; };
   }, []);
@@ -107,7 +107,7 @@ export default function Home() {
       const user = await signInWithUsersTable(loginForm.username, loginForm.password);
       setActiveTab("Dashboard");
       setSessionUser(user);
-      persistSessionUser(user);
+      setLoginForm({ username: "", password: "" });
     } catch (err) {
       const msg = err?.message || "";
       if (msg === "Incorrect username or password.") {
@@ -117,6 +117,18 @@ export default function Home() {
       }
     } finally {
       setLoginPending(false);
+    }
+  }
+
+  async function handleLogout() {
+    clearMessages();
+    try {
+      await clearSessionUser();
+      setSessionUser(null);
+      setReservationForm((form) => ({ ...form, nationalId: "", fullName: "", phone: "" }));
+      setCancelForm({ confirmationCode: "", reason: "" });
+    } catch (err) {
+      setError(err.message);
     }
   }
 
@@ -138,7 +150,7 @@ export default function Home() {
           fullName: reservationForm.fullName,
           phone: reservationForm.phone,
         },
-      });
+      }, sessionUser.id);
       setSuccess(`Reservation confirmed: ${result.booking.confirmationCode}.`);
       await data.refresh();
     } catch (err) {
@@ -189,7 +201,7 @@ export default function Home() {
             />
             <button
               type="submit"
-              disabled={loginPending}
+              disabled={checkingSession || loginPending}
               className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
             >
               {loginPending ? "Signing in…" : "Login"}
@@ -230,12 +242,7 @@ export default function Home() {
               </p>
             </div>
             <button
-              onClick={() => {
-                clearSessionUser();
-                setSessionUser(null);
-                setSuccess("");
-                setError("");
-              }}
+              onClick={handleLogout}
               className="rounded-lg border border-amber-900/20 bg-white/60 px-4 py-2 text-sm font-medium text-slate-800 hover:bg-white/90"
             >
               Logout

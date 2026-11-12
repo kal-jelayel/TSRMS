@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { isAdminRole, normalizeAppRole } from "@/lib/auth/roles";
+import { isAdminRole } from "@/lib/auth/roles";
 import { readSessionUser } from "@/lib/auth/sessionClient";
 import { formatISODateToDMY, parseDMYToISO } from "@/lib/date/dmy";
 import {
@@ -43,14 +43,15 @@ export default function SchedulesPage() {
 
   useEffect(() => {
     let active = true;
-    queueMicrotask(() => {
+    readSessionUser().then((user) => {
       if (!active) return;
-      const restored = readSessionUser();
-      if (!restored?.username || !restored?.role) {
+      if (!user) {
         router.replace("/");
         return;
       }
-      setSessionUser({ ...restored, role: normalizeAppRole(restored.role) });
+      setSessionUser(user);
+    }).catch(() => {
+      if (active) router.replace("/");
     });
     return () => { active = false; };
   }, [router]);
