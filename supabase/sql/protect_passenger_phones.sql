@@ -5,6 +5,9 @@ ALTER TABLE public.reservations
   ADD COLUMN IF NOT EXISTS cancelled_at timestamptz,
   ADD COLUMN IF NOT EXISTS cancellation_reason text;
 
+-- Existing Supabase projects may lack the unique key used by ON CONFLICT.
+CREATE UNIQUE INDEX IF NOT EXISTS passengers_national_id_key ON public.passengers (national_id);
+
 REVOKE ALL PRIVILEGES ON public.users, public.passengers, public.reservations
   FROM PUBLIC, anon, authenticated;
 
